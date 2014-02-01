@@ -113,15 +113,15 @@ sub log_db($$$) {
 
 sub connect_db {
     log_debug("Connecting to database.");
-    my $dbh = DBI->connect("DBI:mysql:database=$conf{db_name};host=$conf{db_host};port=$conf{db_port}", $conf{db_user}, $conf{db_pass}, { AutoCommit => 1 }) || log_error("failed to open DB connection: $DBI::errstr");
+    my $dbh = DBI->connect("DBI:mysql:database=$conf{db_name};host=$conf{db_host};port=$conf{db_port}", $conf{db_user}, $conf{db_pass}, { AutoCommit => 1 }) or ( log_error("failed to open DB connection: $DBI::errstr") and return 0);
     $dbh->{mysql_auto_reconnect} = 1;
     return $dbh;
 }
 
 sub disconnect_db {
     log_debug("Disconnecting to database.");
-    my $rc = $dbh->finish() or log_error("Error while finishing transactions: $dbh->errstr");
-    $dbh->disconnect() or log_error("Error while disconnecting: $dbh->errstr");
+    my $rc = $dbh->finish() or ( log_error("Error while finishing transactions: $dbh->errstr") and return 0 );
+    $dbh->disconnect() or ( log_error("Error while disconnecting: $dbh->errstr") and return 0 );
 }
 
 sub connect_irc {
@@ -194,7 +194,7 @@ sub push_msgs($$) {
     foreach my $key (keys $msgs) {
         log_debug("Got following data of database: " . Dumper($msgs->{$key}));
         my $datetime = ( split(/:\d+$/, $msgs->{$key}->{dt}) )[0];
-        my @id = $dbh->selectrow_arrayref("SELECT id from $conf{'db_logtable'} where dt = '$datetime' and msg = '$msgs->{$key}->{msg}'") or log_error("Couldn't get id. $dbh->errstr");
+        my @id = $dbh->selectrow_arrayref("SELECT id from $conf{'db_logtable'} where dt = '$datetime' and msg = '$msgs->{$key}->{msg}'") or ( log_error("Couldn't get id. $dbh->errstr") and continue );
         log_debug("ID: " . Dumper(@id));
         $irch->yield('privmsg', $nick, "Hi, you were contacted by $msgs->{$key}->{sender}.");
         $irch->yield('privmsg', $nick, "The message was: $msgs->{$key}->{msg}");
@@ -217,7 +217,7 @@ sub get_recipient($) {
     my $rcpt = ($msg =~ m/^\s*@(:?[^ ]+)\s.*$/)[0];
     if ( defined($rcpt) and $rcpt ne '' ) {
         log_debug("Recipient for stored message = $rcpt");
-        my @known_nicks = @{ $dbh->selectall_arrayref("SELECT user from `$conf{'db_logtable'}` where user = '$rcpt' group by user", { Slice => {}}) } or log_error("Couldn't prepare statement." . $dbh->errstr);
+        my @known_nicks = @{ $dbh->selectall_arrayref("SELECT user from `$conf{'db_logtable'}` where user = '$rcpt' group by user", { Slice => {}}) } or ( log_error("Couldn't prepare statement." . $dbh->errstr) and return 0 );
         log_debug("Found " . ( $#known_nicks + 1 ) . " entries in database with $rcpt. " . Dumper(@known_nicks));
         if ( $#known_nicks + 1 == 1 ) {
             return $known_nicks[0]->{'user'};
@@ -343,14 +343,18 @@ On SIGTERM the following actions are done:
             sleep 2;
             $irch->yield('shutdown', 'Good (UGT) Night');
             disconnect_db();
-            open(FILE,$conf{'pidfile'} . ".monitor") || die "failed to open pid file $conf{'pidfile'}.monitor";
-            my @lines = <FILE>;
-            close FILE;
-            log_debug("Stopping selfmonitoring with PID $lines[0]");
-            kill('TERM', $lines[0]);
-            unlink($conf{'pidfile'});
-            unlink($conf{'pidfile'} . ".monitor");
-            unlink($conf{'testfile'});
+            log_debug("Deleting PID file $conf{'pidfile'}");
+            unlink $conf{'pidfile'};
+            log_debug("Deleting test file $conf{'testfile'}");
+            unlink $conf{'testfile'};
+            if ( $conf{'selfmonitor'} == 1 ) {
+                open(FILE,$conf{'pidfile'} . ".monitor") || die "failed to open pid file $conf{'pidfile'}.monitor";
+                my @lines = <FILE>;
+                close FILE;
+                log_debug("Stopping selfmonitoring with PID $lines[0]");
+                kill('TERM', $lines[0]);
+                unlink $conf{'pidfile'} . ".monitor";
+            }
             exit 0;
         }, 'TERM';
 
@@ -510,6 +514,18 @@ sub __stop {
     open(my $pidfile, '<' . $conf{'pidfile'}) or ( log_error("Couldn't open PID file $conf{'pidfile'}: $!") and print "Couldn't open PID file $conf{'pidfile'}: $!" );
     my $pid = <$pidfile>;
     kill('TERM', $pid);
+    log_debug("Deleting PID file $conf{'pidfile'}");
+    unlink $conf{'pidfile'};
+    log_debug("Deleting test file $conf{'testfile'}");
+    unlink $conf{'testfile'};
+    if ( $conf{'selfmonitor'} == 1 ) {
+        open(FILE,$conf{'pidfile'} . ".monitor") || die "failed to open pid file $conf{'pidfile'}.monitor";
+        my @lines = <FILE>;
+        close FILE;
+        log_debug("Stopping selfmonitoring with PID $lines[0]");
+        kill('TERM', $lines[0]);
+        unlink $conf{'pidfile'} . ".monitor";
+    }
     return 0;
 }
 
